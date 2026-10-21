@@ -36,11 +36,33 @@ if ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; t
 fi
 
 if git diff --quiet "origin/${BASE}" HEAD; then
-  echo "O agente não alterou o repositório. Nenhum PR criado."
+  # Sem alterações, a resposta do agente (pergunta, análise) vai como comentário na Issue.
+  REPLY="$(mktemp)"
+  {
+    if [ -n "$LAST_MESSAGE" ] && [ -f "$LAST_MESSAGE" ]; then cat "$LAST_MESSAGE"; else echo "(sem resposta do agente)"; fi
+    echo
+    echo "---"
+    echo "_Resposta do agente ${AGENT}. Nenhum arquivo foi alterado._"
+  } > "$REPLY"
+  gh issue comment "$ISSUE" --body-file "$REPLY"
+  echo "O agente não alterou o repositório. Resposta publicada na Issue."
   exit 0
 fi
 
+# Uma nova execução na mesma Issue (ex.: botão "Run agent") encontra o branch já publicado.
+# Juntamos o trabalho novo ao anterior com merge, sem reescrever o histórico nem forçar o push.
+if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+  git fetch origin "$BRANCH"
+  git merge --no-edit -X ours FETCH_HEAD
+fi
+
 git push -u origin "$BRANCH"
+
+EXISTING_PR="$(gh pr list --head "$BRANCH" --state open --json url --jq '.[0].url // empty')"
+if [ -n "$EXISTING_PR" ]; then
+  echo "PR já aberto: $EXISTING_PR"
+  URL="$EXISTING_PR"
+else
 BODY="$(mktemp)"
 {
   echo "## Para os outros agentes"
@@ -54,5 +76,6 @@ BODY="$(mktemp)"
 } > "$BODY"
 URL="$(gh pr create --draft --base "$BASE" --head "$BRANCH" --title "${AGENT}: issue #${ISSUE}" --body-file "$BODY")"
 echo "PR: $URL"
+fi
 
 bash .github/scripts/agent-board.sh finish "$AGENT" "$ISSUE" "$URL" "$EXPLANATION"
